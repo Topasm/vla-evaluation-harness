@@ -1,0 +1,13 @@
+# SemTok-VLA model server — standard continuous action mode
+# Uses predict_action() like vanilla OpenVLA, with center crop for aug-trained models.
+#
+# Usage: vla-eval serve --config configs/model_servers/semtok_vla.yaml
+
+script: "src/vla_eval/model_servers/semtok_vla.py"
+args:
+  model_path: /scratch/e1816a02/semtok_vla/vla-scripts/libero_log/finetune-libero
+  unnorm_key: libero_spatial_no_noops
+  center_crop: true
+  semtok_vla_path: /scratch/e1816a02/semtok_vla
+  chunk_size: 1
+  port: 8000

@@ -1,0 +1,15 @@
+# SemTok-VLA model server — official UniVLA finetuned checkpoint (latent action mode)
+# Uses predict_latent_action() → ActionDecoder with temporal aggregation.
+# This is the baseline (96.5% published) for comparison.
+
+script: "src/vla_eval/model_servers/semtok_vla.py"
+args:
+  model_path: /scratch/e1816a02/semtok_vla/univla-sft-libero/univla-libero-spatial
+  unnorm_key: libero_spatial_no_noops
+  use_latent: true
+  action_decoder_path: /scratch/e1816a02/semtok_vla/univla-sft-libero/univla-libero-spatial/action_decoder.pt
+  window_size: 12
+  center_crop: true
+  semtok_vla_path: /scratch/e1816a02/semtok_vla
+  chunk_size: 1
+  port: 8000

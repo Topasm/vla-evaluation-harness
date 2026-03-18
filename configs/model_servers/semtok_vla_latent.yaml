@@ -1,0 +1,16 @@
+# SemTok-VLA model server — latent action mode (semantic tokens + action decoder)
+# Uses predict_latent_action() → ActionDecoder with temporal aggregation.
+#
+# Usage: vla-eval serve --config configs/model_servers/semtok_vla_latent.yaml
+
+script: "src/vla_eval/model_servers/semtok_vla.py"
+args:
+  model_path: /scratch/e1816a02/semtok_vla/vla-scripts/libero_log/finetune-libero
+  unnorm_key: libero_spatial_no_noops
+  use_latent: true
+  action_decoder_path: /scratch/e1816a02/semtok_vla/vla-scripts/libero_log/finetune-libero/action_decoder.pt
+  window_size: 12
+  center_crop: true
+  semtok_vla_path: /scratch/e1816a02/semtok_vla
+  chunk_size: 1
+  port: 8000

@@ -1,0 +1,42 @@
+{
+  "benchmark": "LIBEROBenchmark",
+  "mode": "sync",
+  "harness_version": "0.1.dev1+g18749fd21",
+  "tasks": [
+    {
+      "task": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+      "episodes": [
+        {
+          "success": true,
+          "steps": 86,
+          "elapsed_sec": 21.190956550010014,
+          "task": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+          "episode_id": "pick up the black bowl between the plate and the ramekin and place it on the plate_ep0"
+        }
+      ],
+      "success_rate": 1.0,
+      "avg_steps": 86.0
+    }
+  ],
+  "overall_success_rate": 1.0,
+  "config": {
+    "benchmark": "vla_eval.benchmarks.libero.benchmark:LIBEROBenchmark",
+    "mode": "sync",
+    "name": null,
+    "subname": null,
+    "episodes_per_task": 1,
+    "max_steps": null,
+    "max_tasks": 1,
+    "tasks": null,
+    "params": {
+      "suite": "libero_spatial",
+      "seed": 7,
+      "num_steps_wait": 10
+    },
+    "hz": 10.0,
+    "hold_policy": "repeat_last",
+    "throughput_mode": false,
+    "paced": true,
+    "wait_first_action": false
+  }
+}
