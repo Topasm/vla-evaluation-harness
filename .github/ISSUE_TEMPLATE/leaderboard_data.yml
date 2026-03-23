@@ -1,0 +1,15 @@
+name: Leaderboard Data
+description: Add missing scores, correct errors, or report protocol differences
+labels: ["leaderboard"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve the leaderboard! Please read [leaderboard/CONTRIBUTING.md](https://github.com/allenai/vla-evaluation-harness/blob/main/leaderboard/CONTRIBUTING.md) before submitting.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the missing/incorrect scores, include source paper links and table references. Screenshots are welcome.
+    validations:
+      required: true

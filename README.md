@@ -23,6 +23,7 @@
 | **Batch Parallel Evaluation** | Episode sharding + batched GPU inference → **47× throughput** (2 000 LIBERO episodes in 18 min on 1× H100). [Details](#batch-parallel-evaluation) |
 | **Zero Setup** | Benchmarks in Docker, model servers as single-file [uv scripts](https://docs.astral.sh/uv/guides/scripts/) — no dependency conflicts. |
 | **AI-Assisted Integration** | Built-in [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skills for [adding benchmarks](.claude/skills/add-benchmark/) and [model servers](.claude/skills/add-model-server/) — scaffold new integrations in minutes, not hours. |
+| **[Leaderboard](https://allenai.github.io/vla-evaluation-harness/leaderboard/)** | The largest unified VLA comparison — 500+ models × 17 benchmarks, aggregated from 1,700+ papers. |
 
 ---
 
@@ -70,6 +71,8 @@ vla-eval run --config configs/libero_smoke_test.yaml
 ```
 
 Results are saved to `results/` as JSON. The benchmark runs inside Docker by default — pass `--no-docker` for local development.
+
+### Full Evaluation
 
 For full evaluation (10 tasks × 50 episodes):
 
@@ -144,14 +147,14 @@ All benchmark environments are packaged as standalone Docker images based on `ba
 
 | Image | Size | Benchmark | Python | Base |
 |-------|------|-----------|--------|------|
-| [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) | 3.3 GB | — | 3.10 | `nvidia/cuda:12.1.1-runtime-ubuntu22.04` |
+| [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) | 3.3 GB | — | — | `nvidia/cuda:12.1.1-runtime-ubuntu22.04` |
 | [`rlbench`](https://ghcr.io/allenai/vla-evaluation-harness/rlbench) | 4.7 GB | RLBench | 3.8 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
 | [`simpler`](https://ghcr.io/allenai/vla-evaluation-harness/simpler) | 4.9 GB | SimplerEnv | 3.10 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
 | [`libero`](https://ghcr.io/allenai/vla-evaluation-harness/libero) | 6.0 GB | LIBERO | 3.8 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
 | [`libero-pro`](https://ghcr.io/allenai/vla-evaluation-harness/libero-pro) | 6.2 GB | LIBERO-Pro | 3.8 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
 | [`robocerebra`](https://ghcr.io/allenai/vla-evaluation-harness/robocerebra) | 6.3 GB | RoboCerebra | 3.8 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
 | [`calvin`](https://ghcr.io/allenai/vla-evaluation-harness/calvin) | 9.5 GB | CALVIN | 3.8 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
-| [`kinetix`](https://ghcr.io/allenai/vla-evaluation-harness/kinetix) | 9.5 GB | Kinetix | 3.11 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
+| [`kinetix`](https://ghcr.io/allenai/vla-evaluation-harness/kinetix) | 10.0 GB | Kinetix | 3.11 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
 | [`maniskill2`](https://ghcr.io/allenai/vla-evaluation-harness/maniskill2) | 9.8 GB | ManiSkill2 | 3.10 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
 | [`mikasa-robo`](https://ghcr.io/allenai/vla-evaluation-harness/mikasa-robo) | 10.1 GB | MIKASA-Robo | 3.10 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |
 | [`libero-mem`](https://ghcr.io/allenai/vla-evaluation-harness/libero-mem) | 11.3 GB | LIBERO-Mem | 3.8 | [`base`](https://ghcr.io/allenai/vla-evaluation-harness/base) |

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Validate results.json against the JSON schema and check score ranges."""
 
+import argparse
 import json
 import re
 import sys
 from pathlib import Path
+
+import jsonschema
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 RESULTS_PATH = DATA_DIR / "results.json"
@@ -14,15 +17,13 @@ CITATIONS_PATH = DATA_DIR / "citations.json"
 ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}$")
 
 
+def canonical_json(data: dict) -> str:
+    """Return the canonical JSON serialization for results data."""
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
 def validate_schema(data: dict, schema: dict) -> list[str]:
     """Validate data against JSON schema. Returns list of error messages."""
-    try:
-        import jsonschema
-    except ImportError:
-        print("WARNING: jsonschema not installed, skipping schema validation")
-        print("  Install with: uv pip install jsonschema")
-        return []
-
     validator = jsonschema.Draft7Validator(schema)
     return [f"{'.'.join(str(p) for p in e.absolute_path)}: {e.message}" for e in validator.iter_errors(data)]
 
@@ -81,12 +82,32 @@ def validate_score_ranges(data: dict) -> list[str]:
                 errors.append(f"{prefix}: task_scores.{task} not in declared tasks {sorted(declared_tasks)}")
             if not (0 <= val <= 100):
                 errors.append(f"{prefix}: task_scores.{task} = {val} outside range [0, 100]")
+            if bm_key == "simpler_env" and not (task.endswith("_vm") or task.endswith("_va")):
+                errors.append(
+                    f"{prefix}: simpler_env task_scores key '{task}' "
+                    "must end with _vm or _va to indicate evaluation protocol"
+                )
 
         # Check no duplicate (model, benchmark, weight_type)
         pair = (result["model"], bm_key, result.get("weight_type", "shared"))
         if pair in seen_pairs:
             errors.append(f"{prefix}: duplicate entry for {pair}")
         seen_pairs.add(pair)
+
+    return errors
+
+
+def validate_sort_and_format(data: dict, raw_text: str) -> list[str]:
+    """Check that results are sorted by (benchmark, model) and file uses canonical format."""
+    errors = []
+    results = data["results"]
+    pairs = [(r["benchmark"], r["model"]) for r in results]
+    if pairs != sorted(pairs):
+        errors.append("results array is not sorted by (benchmark, model) — run with --fix to auto-sort")
+
+    expected = canonical_json(data)
+    if raw_text != expected and pairs == sorted(pairs):
+        errors.append("file format does not match canonical style (indent=2, trailing newline) — run with --fix")
 
     return errors
 
@@ -153,16 +174,32 @@ def validate_citations(data: dict) -> list[str]:
 
 
 def main() -> int:
-    results_path = Path(sys.argv[1]) if len(sys.argv) > 1 else RESULTS_PATH
+    parser = argparse.ArgumentParser(description="Validate results.json against schema and leaderboard rules.")
+    parser.add_argument("results_file", nargs="?", default=None, help="Path to results.json (default: auto-detect)")
+    parser.add_argument("--fix", action="store_true", help="Auto-fix sort order and canonical formatting")
+    args = parser.parse_args()
 
-    with open(results_path) as f:
-        data = json.load(f)
+    results_path = Path(args.results_file) if args.results_file else RESULTS_PATH
+    raw_text = results_path.read_text()
+    data = json.loads(raw_text)
+
     with open(SCHEMA_PATH) as f:
         schema = json.load(f)
+
+    if args.fix:
+        data["results"].sort(key=lambda r: (r["benchmark"], r["model"]))
+        fixed_text = canonical_json(data)
+        if fixed_text != raw_text:
+            results_path.write_text(fixed_text)
+            raw_text = fixed_text
+            print(f"Fixed: sorted results and wrote canonical format to {results_path}")
+        else:
+            print("Nothing to fix: already sorted and canonical.")
 
     errors = (
         validate_schema(data, schema)
         + validate_score_ranges(data)
+        + validate_sort_and_format(data, raw_text)
         + validate_official_leaderboard_policy(data)
         + validate_papers_reviewed(data)
         + validate_citations(data)
