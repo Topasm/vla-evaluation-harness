@@ -16,6 +16,11 @@
   let coverageData = null;
   let citationData = null; // arxiv_id → citation count
 
+  // ─── Pagination state ─────────────────────────────────────────────────────
+  const PAGE_SIZE = 50;
+  let currentPage = 0;
+  let lastFilteredModels = []; // cached for pagination
+
   // ─── DOM refs ──────────────────────────────────────────────────────────────
   const $ = id => document.getElementById(id);
   const loadingEl = $('loading');
@@ -48,11 +53,11 @@
       .then(json => { if (json) { citationData = json.papers || {}; renderTable(); } })
       .catch(() => {});
 
+    function resetAndRender() { currentPage = 0; renderTable(); }
     if (benchmarkFilterEl) benchmarkFilterEl.addEventListener('change', onBenchmarkFilterChange);
-    if (modelSearchEl) modelSearchEl.addEventListener('input', () => renderTable());
-    if (dateFromEl) dateFromEl.addEventListener('change', () => renderTable());
-    if (dateToEl) dateToEl.addEventListener('change', () => renderTable());
-    if (minCitationsEl) minCitationsEl.addEventListener('input', () => renderTable());
+    for (const [elem, evt] of [[modelSearchEl, 'input'], [dateFromEl, 'change'], [dateToEl, 'change'], [minCitationsEl, 'input']]) {
+      if (elem) elem.addEventListener(evt, resetAndRender);
+    }
     if (breakdownPanelEl) breakdownPanelEl.addEventListener('click', e => {
       if (e.target.classList.contains('breakdown-close')) closeBreakdown();
     });
@@ -151,6 +156,7 @@
     const val = benchmarkFilterEl.value;
     selectedBenchmark = val || null;
     detailSortSuite = null; // reset suite sort when switching benchmarks
+    currentPage = 0;
     if (val) { sortState.column = val; sortState.direction = 'desc'; }
     else { sortState.column = '_date'; sortState.direction = 'desc'; }
     closeBreakdown();
@@ -296,6 +302,7 @@
   // ═══════════════════════════════════════════════════════════════════════════
   function renderOverviewTable() {
     if (!theadEl || !tbodyEl) return;
+    hideTooltip();
     tableEl.className = 'overview-mode';
 
     // Header
@@ -315,13 +322,20 @@
     }
     theadEl.innerHTML = ''; theadEl.appendChild(htr);
 
-    // Body
+    // Filter + sort, then cache for pagination
     const sorted = getSortedModels(sortState.column);
+    lastFilteredModels = sorted.filter(mk => isModelVisible(mk));
     const best = computeBestByColumn();
-    tbodyEl.innerHTML = '';
 
-    for (const mk of sorted) {
-      if (!isModelVisible(mk)) continue;
+    // Paginate
+    const totalPages = Math.max(1, Math.ceil(lastFilteredModels.length / PAGE_SIZE));
+    if (currentPage >= totalPages) currentPage = totalPages - 1;
+    const start = currentPage * PAGE_SIZE;
+    const pageModels = lastFilteredModels.slice(start, start + PAGE_SIZE);
+
+    // Build rows in a DocumentFragment
+    const frag = document.createDocumentFragment();
+    for (const mk of pageModels) {
       const model = Object.values(pivotMap[mk] || {})[0] || {};
       const tr = document.createElement('tr');
 
@@ -343,31 +357,70 @@
       ptd.textContent = model.params || '—';
       tr.appendChild(ptd);
 
-      // Score cells
+      // Score cells — no tooltip div, just data attributes
       for (const col of overviewColumns) {
         const result = pivotMap[mk] && pivotMap[mk][col.bmKey];
         const bm = data.benchmarks[col.bmKey] || {};
         const metric = bm.metric || {};
-        const td = document.createElement('td');
-        td.className = 'score-cell';
-        td.dataset.colid = col.colId;
+        const cell = document.createElement('td');
+        cell.className = 'score-cell';
+        cell.dataset.colid = col.colId;
 
         if (result) {
-          if (best[col.colId] === mk) td.classList.add('best');
+          if (best[col.colId] === mk) cell.classList.add('best');
           const displayScore = getDisplayScore(result, col.bmKey, col.suite);
-          td.appendChild(el('span', formatScore(displayScore, metric.name), 'score-value'));
-          if (displayScore != null) td.dataset.score = displayScore;
-          td.appendChild(buildTooltip(result));
+          cell.appendChild(el('span', formatScore(displayScore, metric.name), 'score-value'));
+          if (displayScore != null) cell.dataset.score = displayScore;
+          storeTooltipData(cell, result);
+          cell.addEventListener('mouseenter', showTooltip);
+          cell.addEventListener('mouseleave', hideTooltip);
         } else {
-          td.classList.add('empty');
-          td.textContent = '—';
+          cell.classList.add('empty');
+          cell.textContent = '—';
         }
-        tr.appendChild(td);
+        tr.appendChild(cell);
       }
-      tbodyEl.appendChild(tr);
+      frag.appendChild(tr);
     }
+    tbodyEl.innerHTML = '';
+    tbodyEl.appendChild(frag);
 
-    applyHeatmapColors();
+    // Heatmap deferred to next frame
+    requestAnimationFrame(applyHeatmapColors);
+
+    // Pagination controls
+    renderPagination(totalPages);
+  }
+
+  // ─── Pagination controls ─────────────────────────────────────────────────
+  function renderPagination(totalPages) {
+    let pager = $('pagination');
+    if (totalPages <= 1) {
+      if (pager) pager.style.display = 'none';
+      return;
+    }
+    if (!pager) {
+      pager = document.createElement('div');
+      pager.id = 'pagination';
+      pager.className = 'pagination';
+      tableEl.parentNode.insertBefore(pager, tableEl.nextSibling);
+    }
+    pager.style.display = '';
+    const total = lastFilteredModels.length;
+    const start = currentPage * PAGE_SIZE + 1;
+    const end = Math.min(start + PAGE_SIZE - 1, total);
+    pager.innerHTML =
+      `<button class="page-btn" ${currentPage === 0 ? 'disabled' : ''} data-dir="prev">← Prev</button>` +
+      `<span class="page-info">${start}–${end} of ${total}</span>` +
+      `<button class="page-btn" ${currentPage >= totalPages - 1 ? 'disabled' : ''} data-dir="next">Next →</button>`;
+    pager.onclick = e => {
+      const btn = e.target.closest('[data-dir]');
+      if (!btn || btn.disabled) return;
+      currentPage += btn.dataset.dir === 'next' ? 1 : -1;
+      renderTable();
+      // Scroll table into view
+      tableEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
   }
 
   function applyHeatmapColors() {
@@ -400,6 +453,9 @@
   function renderDetailView(bmKey) {
     if (!theadEl || !tbodyEl) return;
     tableEl.className = 'detail-mode';
+    // Hide overview pagination in detail view
+    const pager = $('pagination');
+    if (pager) pager.style.display = 'none';
     const bm = data.benchmarks[bmKey] || {};
     const metric = bm.metric || {};
     const expandSuites = shouldExpandSuites(bmKey);
@@ -626,6 +682,7 @@
   function toggleSort(col) {
     if (sortState.column === col) sortState.direction = sortState.direction === 'asc' ? 'desc' : 'asc';
     else { sortState.column = col; sortState.direction = 'desc'; }
+    currentPage = 0;
   }
 
   function getLatestDate(mk) {
@@ -688,22 +745,50 @@
     }
   }
 
-  // ─── Tooltip ───────────────────────────────────────────────────────────────
-  function buildTooltip(result) {
-    const div = document.createElement('div');
-    div.className = 'tooltip-content';
-    if (result.source_paper) {
-      const p = document.createElement('p');
-      const a = el('a', result.source_paper, '');
-      a.href = result.source_paper; a.target = '_blank';
-      p.appendChild(document.createTextNode('Paper: ')); p.appendChild(a);
-      div.appendChild(p);
-    }
-    if (result.source_table) div.appendChild(el('p', 'Table: ' + result.source_table));
-    div.appendChild(el('p', 'Curated by: ' + (result.curated_by || '?')));
-    if (result.date_added) div.appendChild(el('p', 'Date: ' + result.date_added));
-    if (result.notes) div.appendChild(el('p', 'Notes: ' + result.notes));
-    return div;
+  // ─── Shared tooltip (single DOM element, positioned on hover) ─────────────
+  let sharedTooltip = null;
+
+  function ensureSharedTooltip() {
+    if (sharedTooltip) return sharedTooltip;
+    sharedTooltip = document.createElement('div');
+    sharedTooltip.className = 'tooltip-content';
+    sharedTooltip.style.display = 'none';
+    document.body.appendChild(sharedTooltip);
+    return sharedTooltip;
+  }
+
+  function storeTooltipData(td, result) {
+    td.dataset.tipPaper = result.source_paper || '';
+    td.dataset.tipTable = result.source_table || '';
+    td.dataset.tipCurator = result.curated_by || '';
+    td.dataset.tipDate = result.date_added || '';
+    td.dataset.tipNotes = result.notes || '';
+  }
+
+  function showTooltip(e) {
+    const td = e.currentTarget;
+    const tip = ensureSharedTooltip();
+    let html = '';
+    function row(label, val) { html += `<span class="tip-label">${label}</span><span>${val}</span>`; }
+    if (td.dataset.tipPaper) row('Paper', `<a href="${escHtml(td.dataset.tipPaper)}" target="_blank" class="tip-link">${escHtml(td.dataset.tipPaper)}</a>`);
+    if (td.dataset.tipTable) row('Table', escHtml(td.dataset.tipTable));
+    row('Curated', escHtml(td.dataset.tipCurator || '?'));
+    if (td.dataset.tipDate) row('Date', escHtml(td.dataset.tipDate));
+    if (td.dataset.tipNotes) row('Notes', escHtml(td.dataset.tipNotes));
+    tip.innerHTML = html;
+    // Position above the cell; use visibility to measure without reflow flash
+    const rect = td.getBoundingClientRect();
+    tip.style.visibility = 'hidden';
+    tip.style.display = 'grid';
+    const tipW = tip.offsetWidth;
+    const tipH = tip.offsetHeight;
+    tip.style.left = Math.max(0, rect.right - tipW) + window.scrollX + 'px';
+    tip.style.top = (rect.top - tipH - 4) + window.scrollY + 'px';
+    tip.style.visibility = '';
+  }
+
+  function hideTooltip() {
+    if (sharedTooltip) sharedTooltip.style.display = 'none';
   }
 
   // ─── Breakdown panel ───────────────────────────────────────────────────────
