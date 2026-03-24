@@ -132,7 +132,7 @@ a:hover {
 /* Official leaderboard notice */
 .official-notice {
   background: #fdf6e8;
-  border: 1px solid #da9679;
+  border: 1px solid var(--warning);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.85rem;
@@ -142,7 +142,7 @@ a:hover {
 
 .official-notice a {
   font-weight: 600;
-  color: #da9679;
+  color: var(--warning);
 }
 
 .official-notice a:hover {
@@ -395,7 +395,7 @@ tbody tr:last-child td {
   position: relative;
   padding: 0.25rem 0.375rem;
   min-width: 3.25rem;
-  transition: background-color 0.15s;
+  /* no transition — 1250 cells animating simultaneously on heatmap apply */
 }
 
 .overview-mode .score-cell .score-value {
