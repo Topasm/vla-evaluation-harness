@@ -7,7 +7,7 @@
     "libero": {
       "display_name": "LIBERO",
       "arxiv_id": "2306.03310",
-      "citing_papers": 662,
+      "citing_papers": 661,
       "leaderboard_entries": 166,
       "papers_reviewed": 551
     },
@@ -35,14 +35,14 @@
     "calvin": {
       "display_name": "CALVIN",
       "arxiv_id": "2112.03227",
-      "citing_papers": 486,
+      "citing_papers": 485,
       "leaderboard_entries": 59,
       "papers_reviewed": 391
     },
     "simpler_env": {
       "display_name": "SimplerEnv",
       "arxiv_id": "2405.05941",
-      "citing_papers": 308,
+      "citing_papers": 307,
       "leaderboard_entries": 86,
       "papers_reviewed": 268
     },
@@ -56,7 +56,7 @@
     "rlbench": {
       "display_name": "RLBench",
       "arxiv_id": "1909.12271",
-      "citing_papers": 818,
+      "citing_papers": 816,
       "leaderboard_entries": 54,
       "papers_reviewed": 605
     },
@@ -98,7 +98,7 @@
     "kinetix": {
       "display_name": "Kinetix",
       "arxiv_id": "2506.07339",
-      "citing_papers": 71,
+      "citing_papers": 70,
       "leaderboard_entries": 12,
       "papers_reviewed": 52
     },
