@@ -1,0 +1,12 @@
+# SemTok-VLA Long suite (v7 fixed-interval ablation) — latent action mode
+script: "src/vla_eval/model_servers/semtok_vla.py"
+args:
+  model_path: /home/shkim_rllab/Desktop/semtok_vla/runs/univla-libero-10+libero_10_no_noops+b16+lr-0.00035+lora-r32+dropout-0.0--long_v7_fixed--image_aug=w-LowLevelDecoder-ws-12
+  unnorm_key: libero_10_no_noops
+  use_latent: true
+  action_decoder_path: /home/shkim_rllab/Desktop/semtok_vla/runs/univla-libero-10+libero_10_no_noops+b16+lr-0.00035+lora-r32+dropout-0.0--long_v7_fixed--image_aug=w-LowLevelDecoder-ws-12/action_decoder-30000.pt
+  window_size: 12
+  center_crop: true
+  semtok_vla_path: /home/shkim_rllab/Desktop/semtok_vla
+  chunk_size: 1
+  port: 8000

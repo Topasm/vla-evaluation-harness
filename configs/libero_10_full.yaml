@@ -1,0 +1,14 @@
+# LIBERO-10 full eval — 50 episodes per task (no docker)
+server:
+  url: "ws://localhost:8000"
+
+output_dir: "./results"
+
+benchmarks:
+  - benchmark: "vla_eval.benchmarks.libero.benchmark:LIBEROBenchmark"
+    mode: sync
+    episodes_per_task: 50
+    params:
+      suite: libero_10
+      seed: 7
+      num_steps_wait: 10
