@@ -1,0 +1,12 @@
+# Ablation: learned boundaries (30K steps, batch=32, H200)
+script: "src/vla_eval/model_servers/semtok_vla.py"
+args:
+  model_path: /scratch/e1816a02/semtok_vla/runs/univla-libero-10+libero_10_no_noops+b32+lr-0.00035+lora-r32+dropout-0.0--learned--image_aug=w-LowLevelDecoder-ws-12
+  unnorm_key: libero_10_no_noops
+  use_latent: true
+  action_decoder_path: /scratch/e1816a02/semtok_vla/runs/univla-libero-10+libero_10_no_noops+b32+lr-0.00035+lora-r32+dropout-0.0--learned--image_aug=w-LowLevelDecoder-ws-12/action_decoder-30000.pt
+  window_size: 12
+  center_crop: true
+  semtok_vla_path: /scratch/e1816a02/semtok_vla
+  chunk_size: 1
+  port: 8000

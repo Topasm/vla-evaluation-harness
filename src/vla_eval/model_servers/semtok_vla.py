@@ -10,6 +10,7 @@
 #     "numpy>=1.24",
 #     "accelerate",
 #     "tensorflow",
+#     "draccus",
 # ]
 #
 # [tool.uv.sources]
