@@ -1,0 +1,35 @@
+# RoboTwin 2.0 — SemTok P0 object-proxy early intervention probe
+#
+# P0 continues normally until a lightweight red/orange non-edge bottle proxy
+# suggests contact drift is entering the 80-90 step danger window. Then the
+# task-default oracle suffix is invoked to test whether early handoff is still
+# recoverable.
+server:
+  url: "ws://localhost:8000"
+  timeout: 180
+
+docker:
+  image: ghcr.io/allenai/vla-evaluation-harness/robotwin:latest
+
+output_dir: "./results"
+
+benchmarks:
+  - benchmark: "vla_eval.benchmarks.robotwin.benchmark:RoboTwinBenchmark"
+    episodes_per_task: 1
+    max_steps: 140
+    params:
+      task_name: pick_diverse_bottles
+      task_config: demo_clean
+      seed: 0
+      instruction_type: seen
+      test_num: 1
+      skip_expert_check: true
+      fast_init: false
+      oracle_suffix_trigger: object_proxy_guard
+      oracle_suffix_min_step: 70
+      oracle_suffix_max_step: 95
+      oracle_suffix_non_edge_area_lte: 430
+      oracle_suffix_non_edge_aspect_gte: 0.5
+      oracle_suffix_mode: task_default
+      oracle_suffix_end_episode: true
+    action_dim: 14

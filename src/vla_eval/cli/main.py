@@ -416,7 +416,8 @@ def _build_serve_cmd(
     in the yaml's ``args:`` block emits under ``--args.*`` so jsonargparse maps
     them onto ``server_cls.__init__``.
     """
-    cmd: list[str] = [uv, "run", str(script)]
+    python = config.get("python")
+    cmd: list[str] = [str(python), str(script)] if python else [uv, "run", str(script)]
     args_block = dict(config.get("args") or {})
     for k in _SERVER_LEVEL_KEYS:
         if k in args_block:

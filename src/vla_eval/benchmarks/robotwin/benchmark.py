@@ -28,7 +28,7 @@ from vla_eval.types import Action, EpisodeResult, Observation, Task
 
 logger = logging.getLogger(__name__)
 
-ROBOTWIN_ROOT = "/app/RoboTwin"
+ROBOTWIN_ROOT = os.environ.get("ROBOTWIN_ROOT", "/app/RoboTwin")
 
 
 class _EvalGripperPlanner:
@@ -198,7 +198,38 @@ class RoboTwinBenchmark(StepBenchmark):
             differ from the reference benchmark.
     """
 
-    _ALL_RECORD_FIELDS = frozenset({"reward", "done", "success"})
+    _ALL_RECORD_FIELDS = frozenset(
+        {
+            "reward",
+            "done",
+            "success",
+            "action",
+            "action_min",
+            "action_max",
+            "action_l2",
+            "action_delta_from_prev_qpos_l2",
+            "action_delta_from_prev_qpos_max_abs",
+            "qpos",
+            "qpos_min",
+            "qpos_max",
+            "qpos_l2",
+            "qpos_step_delta_l2",
+            "qpos_step_delta_max_abs",
+            "object_proxy_count",
+            "object_proxy_area",
+            "object_proxy_bbox",
+            "object_proxy_centroid",
+            "object_proxy_extent_wh",
+            "object_proxy_aspect",
+            "object_proxy_top_edge",
+            "object_proxy_components",
+            "object_proxy_non_edge_area",
+            "object_proxy_non_edge_bbox",
+            "object_proxy_non_edge_centroid",
+            "object_proxy_non_edge_extent_wh",
+            "object_proxy_non_edge_aspect",
+        }
+    )
 
     def __init__(
         self,
@@ -210,6 +241,14 @@ class RoboTwinBenchmark(StepBenchmark):
         skip_expert_check: bool = False,
         fast_init: bool = True,
         fast_render: bool = False,
+        oracle_suffix_at_step: int | None = None,
+        oracle_suffix_trigger: str = "step",
+        oracle_suffix_min_step: int = 0,
+        oracle_suffix_max_step: int | None = None,
+        oracle_suffix_non_edge_area_lte: int | None = None,
+        oracle_suffix_non_edge_aspect_gte: float | None = None,
+        oracle_suffix_mode: str = "task_default",
+        oracle_suffix_end_episode: bool = True,
     ) -> None:
         import re
 
@@ -226,9 +265,20 @@ class RoboTwinBenchmark(StepBenchmark):
         self.skip_expert_check = skip_expert_check
         self.fast_init = fast_init
         self.fast_render = fast_render
+        self.oracle_suffix_at_step = oracle_suffix_at_step
+        self.oracle_suffix_trigger = oracle_suffix_trigger
+        self.oracle_suffix_min_step = oracle_suffix_min_step
+        self.oracle_suffix_max_step = oracle_suffix_max_step
+        self.oracle_suffix_non_edge_area_lte = oracle_suffix_non_edge_area_lte
+        self.oracle_suffix_non_edge_aspect_gte = oracle_suffix_non_edge_aspect_gte
+        self.oracle_suffix_mode = oracle_suffix_mode
+        self.oracle_suffix_end_episode = oracle_suffix_end_episode
         self._env: Any = None
         self._env_class: Any = None
         self._args: dict[str, Any] | None = None
+        self._last_qpos: np.ndarray | None = None
+        self._oracle_suffix_ran = False
+        self._oracle_suffix_result: dict[str, Any] = {}
 
     # -----------------------------------------------------------------
     # Lazy init
@@ -401,6 +451,9 @@ class RoboTwinBenchmark(StepBenchmark):
             )
         self._env.set_instruction(instruction=task["instruction"])
         raw_obs = self._env.get_obs()
+        self._last_qpos = self._extract_qpos(raw_obs)
+        self._oracle_suffix_ran = False
+        self._oracle_suffix_result = {}
         self._recorder.record_video(self._extract_frame(raw_obs))
         return raw_obs
 
@@ -415,11 +468,141 @@ class RoboTwinBenchmark(StepBenchmark):
 
         self._env.take_action(act, action_type="qpos")
         raw_obs = self._env.get_obs()
+        qpos = self._extract_qpos(raw_obs)
+        telemetry = self._make_action_telemetry(act, qpos, self._last_qpos)
+        frame = self._extract_frame(raw_obs)
+        telemetry.update(self._make_object_proxy_telemetry(frame))
+        self._last_qpos = qpos
         success = bool(self._env.eval_success)
         done = success or (self._env.take_action_cnt >= self._env.step_lim)
-        self._recorder.record_video(self._extract_frame(raw_obs))
-        self._recorder.record_step(reward=1.0 if success else 0.0, done=done, success=success)
+        self._recorder.record_video(frame)
+        self._recorder.record_step(
+            reward=1.0 if success else 0.0,
+            done=done,
+            success=success,
+            **telemetry,
+        )
+        should_run, trigger_reason = self._should_run_oracle_suffix(done, telemetry)
+        if should_run:
+            self._oracle_suffix_result = self._run_oracle_suffix(trigger_reason=trigger_reason, telemetry=telemetry)
+            raw_obs = self._env.get_obs()
+            success = bool(self._oracle_suffix_result.get("post_success", False) or self._env.eval_success)
+            if success:
+                self._env.eval_success = True
+            done = bool(self.oracle_suffix_end_episode or success or (self._env.take_action_cnt >= self._env.step_lim))
         return StepResult(obs=raw_obs, reward=1.0 if success else 0.0, done=done, info={"success": success})
+
+    def _should_run_oracle_suffix(self, done: bool, telemetry: dict[str, Any] | None = None) -> tuple[bool, str]:
+        if done or self._oracle_suffix_ran:
+            return False, ""
+
+        step = int(self._env.take_action_cnt)
+        if step < int(self.oracle_suffix_min_step):
+            return False, ""
+        if self.oracle_suffix_max_step is not None and step > int(self.oracle_suffix_max_step):
+            return False, ""
+
+        if self.oracle_suffix_trigger == "step":
+            if self.oracle_suffix_at_step is None:
+                return False, ""
+            if step < int(self.oracle_suffix_at_step):
+                return False, ""
+            return True, f"step>={int(self.oracle_suffix_at_step)}"
+
+        if self.oracle_suffix_trigger != "object_proxy_guard":
+            raise ValueError(f"unsupported oracle_suffix_trigger={self.oracle_suffix_trigger!r}")
+
+        telemetry = telemetry or {}
+        reasons: list[str] = []
+        if self.oracle_suffix_non_edge_area_lte is not None:
+            area = int(telemetry.get("object_proxy_non_edge_area", 0))
+            if area > int(self.oracle_suffix_non_edge_area_lte):
+                return False, ""
+            reasons.append(f"non_edge_area<={int(self.oracle_suffix_non_edge_area_lte)}")
+        if self.oracle_suffix_non_edge_aspect_gte is not None:
+            aspect = float(telemetry.get("object_proxy_non_edge_aspect", 0.0))
+            if aspect < float(self.oracle_suffix_non_edge_aspect_gte):
+                return False, ""
+            reasons.append(f"non_edge_aspect>={float(self.oracle_suffix_non_edge_aspect_gte):.3f}")
+        if not reasons:
+            return False, ""
+        return True, ",".join(reasons)
+
+    def _run_oracle_suffix(self, *, trigger_reason: str, telemetry: dict[str, Any]) -> dict[str, Any]:
+        self._oracle_suffix_ran = True
+        result: dict[str, Any] = {
+            "oracle_suffix_ran": True,
+            "oracle_suffix_step": int(self._env.take_action_cnt),
+            "oracle_suffix_trigger": self.oracle_suffix_trigger,
+            "oracle_suffix_trigger_reason": trigger_reason,
+            "oracle_suffix_mode": self.oracle_suffix_mode,
+            "trigger_non_edge_area": int(telemetry.get("object_proxy_non_edge_area", 0)),
+            "trigger_non_edge_aspect": float(telemetry.get("object_proxy_non_edge_aspect", 0.0)),
+            "trigger_non_edge_bbox": telemetry.get("object_proxy_non_edge_bbox", []),
+            "pre_success": bool(self._env.check_success()),
+            "pre_plan_success": bool(getattr(self._env, "plan_success", False)),
+            "post_success": False,
+            "plan_success": bool(getattr(self._env, "plan_success", False)),
+            "grasp_move_success": False,
+            "lift_move_success": False,
+            "place_move_success": False,
+            "error": "",
+        }
+        try:
+            if self.task_name != "pick_diverse_bottles":
+                raise NotImplementedError(f"oracle suffix is not implemented for task {self.task_name!r}")
+            if self.oracle_suffix_mode not in {"task_default", "pick_diverse_bottles"}:
+                raise ValueError(f"unsupported oracle_suffix_mode={self.oracle_suffix_mode!r}")
+
+            from envs.utils import ArmTag
+
+            left = ArmTag("left")
+            right = ArmTag("right")
+            result["grasp_move_success"] = bool(
+                self._env.move(
+                    self._env.grasp_actor(self._env.bottle1, arm_tag=left, pre_grasp_dis=0.08),
+                    self._env.grasp_actor(self._env.bottle2, arm_tag=right, pre_grasp_dis=0.08),
+                )
+            )
+            result["lift_move_success"] = bool(
+                self._env.move(
+                    self._env.move_by_displacement(arm_tag=left, z=0.1),
+                    self._env.move_by_displacement(arm_tag=right, z=0.1),
+                )
+            )
+            result["place_move_success"] = bool(
+                self._env.move(
+                    self._env.place_actor(
+                        self._env.bottle1,
+                        target_pose=self._env.left_target_pose,
+                        arm_tag=left,
+                        functional_point_id=0,
+                        pre_dis=0.0,
+                        dis=0.0,
+                        is_open=False,
+                    ),
+                    self._env.place_actor(
+                        self._env.bottle2,
+                        target_pose=self._env.right_target_pose,
+                        arm_tag=right,
+                        functional_point_id=0,
+                        pre_dis=0.0,
+                        dis=0.0,
+                        is_open=False,
+                    ),
+                )
+            )
+            result["plan_success"] = bool(getattr(self._env, "plan_success", False))
+            result["post_success"] = bool(self._env.check_success())
+        except Exception as exc:
+            logger.exception("RoboTwin oracle suffix failed")
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            result["plan_success"] = bool(getattr(self._env, "plan_success", False))
+            try:
+                result["post_success"] = bool(self._env.check_success())
+            except Exception:
+                result["post_success"] = False
+        return result
 
     @staticmethod
     def _extract_frame(raw_obs: Any) -> np.ndarray | None:
@@ -429,6 +612,202 @@ class RoboTwinBenchmark(StepBenchmark):
             return np.asarray(raw_obs["observation"]["head_camera"]["rgb"])
         except (KeyError, TypeError):
             return None
+
+    @staticmethod
+    def _extract_qpos(raw_obs: Any) -> np.ndarray | None:
+        if not isinstance(raw_obs, dict):
+            return None
+        try:
+            qpos = np.asarray(raw_obs["joint_action"]["vector"], dtype=np.float64).reshape(-1)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if qpos.size < 14:
+            return np.pad(qpos, (0, 14 - qpos.size))
+        if qpos.size > 14:
+            return qpos[:14]
+        return qpos
+
+    @staticmethod
+    def _make_action_telemetry(
+        action: np.ndarray,
+        qpos: np.ndarray | None,
+        previous_qpos: np.ndarray | None,
+    ) -> dict[str, Any]:
+        action = np.asarray(action, dtype=np.float64).reshape(-1)[:14]
+        out: dict[str, Any] = {
+            "action": action.tolist(),
+            "action_min": float(np.min(action)),
+            "action_max": float(np.max(action)),
+            "action_l2": float(np.linalg.norm(action)),
+        }
+        if previous_qpos is not None:
+            previous = np.asarray(previous_qpos, dtype=np.float64).reshape(-1)[:14]
+            command_delta = action - previous
+            out.update(
+                {
+                    "action_delta_from_prev_qpos_l2": float(np.linalg.norm(command_delta)),
+                    "action_delta_from_prev_qpos_max_abs": float(np.max(np.abs(command_delta))),
+                }
+            )
+        if qpos is not None:
+            qpos = np.asarray(qpos, dtype=np.float64).reshape(-1)[:14]
+            out.update(
+                {
+                    "qpos": qpos.tolist(),
+                    "qpos_min": float(np.min(qpos)),
+                    "qpos_max": float(np.max(qpos)),
+                    "qpos_l2": float(np.linalg.norm(qpos)),
+                }
+            )
+            if previous_qpos is not None:
+                previous = np.asarray(previous_qpos, dtype=np.float64).reshape(-1)[:14]
+                qpos_delta = qpos - previous
+                out.update(
+                    {
+                        "qpos_step_delta_l2": float(np.linalg.norm(qpos_delta)),
+                        "qpos_step_delta_max_abs": float(np.max(np.abs(qpos_delta))),
+                    }
+                )
+        return out
+
+    @staticmethod
+    def _make_object_proxy_telemetry(frame: np.ndarray | None) -> dict[str, Any]:
+        """Track the largest red/orange object-like component in the head camera.
+
+        This is a lightweight diagnostic for RoboTwin bottle tasks, not a
+        general detector. It lets closed-loop recordings expose whether a
+        bottle-like region stays upright, gets pushed to the image edge, or
+        collapses into a horizontal/top-edge component.
+        """
+        if frame is None:
+            return {
+                "object_proxy_count": 0,
+                "object_proxy_area": 0,
+                "object_proxy_bbox": [],
+                "object_proxy_centroid": [],
+                "object_proxy_extent_wh": [],
+                "object_proxy_aspect": 0.0,
+                "object_proxy_top_edge": False,
+                "object_proxy_components": [],
+                "object_proxy_non_edge_area": 0,
+                "object_proxy_non_edge_bbox": [],
+                "object_proxy_non_edge_centroid": [],
+                "object_proxy_non_edge_extent_wh": [],
+                "object_proxy_non_edge_aspect": 0.0,
+            }
+        arr = np.asarray(frame)
+        if arr.ndim != 3 or arr.shape[-1] < 3:
+            return {
+                "object_proxy_count": 0,
+                "object_proxy_area": 0,
+                "object_proxy_bbox": [],
+                "object_proxy_centroid": [],
+                "object_proxy_extent_wh": [],
+                "object_proxy_aspect": 0.0,
+                "object_proxy_top_edge": False,
+                "object_proxy_components": [],
+                "object_proxy_non_edge_area": 0,
+                "object_proxy_non_edge_bbox": [],
+                "object_proxy_non_edge_centroid": [],
+                "object_proxy_non_edge_extent_wh": [],
+                "object_proxy_non_edge_aspect": 0.0,
+            }
+        rgb = arr[..., :3].astype(np.int16)
+        red = rgb[..., 0]
+        green = rgb[..., 1]
+        blue = rgb[..., 2]
+        mask = (red > 115) & (green < 135) & (blue < 115) & ((red - blue) > 45)
+        components = RoboTwinBenchmark._connected_components(mask, min_area=50)
+        if not components:
+            return {
+                "object_proxy_count": 0,
+                "object_proxy_area": 0,
+                "object_proxy_bbox": [],
+                "object_proxy_centroid": [],
+                "object_proxy_extent_wh": [],
+                "object_proxy_aspect": 0.0,
+                "object_proxy_top_edge": False,
+                "object_proxy_components": [],
+                "object_proxy_non_edge_area": 0,
+                "object_proxy_non_edge_bbox": [],
+                "object_proxy_non_edge_centroid": [],
+                "object_proxy_non_edge_extent_wh": [],
+                "object_proxy_non_edge_aspect": 0.0,
+            }
+        comp = components[0]
+        width, height = comp["extent_wh"]
+        aspect = float(width / max(height, 1))
+        non_edge = next((candidate for candidate in components if candidate["bbox"][1] > 2), None)
+        if non_edge is not None:
+            non_edge_width, non_edge_height = non_edge["extent_wh"]
+            non_edge_fields: dict[str, Any] = {
+                "object_proxy_non_edge_area": non_edge["area"],
+                "object_proxy_non_edge_bbox": non_edge["bbox"],
+                "object_proxy_non_edge_centroid": non_edge["centroid"],
+                "object_proxy_non_edge_extent_wh": non_edge["extent_wh"],
+                "object_proxy_non_edge_aspect": float(non_edge_width / max(non_edge_height, 1)),
+            }
+        else:
+            non_edge_fields = {
+                "object_proxy_non_edge_area": 0,
+                "object_proxy_non_edge_bbox": [],
+                "object_proxy_non_edge_centroid": [],
+                "object_proxy_non_edge_extent_wh": [],
+                "object_proxy_non_edge_aspect": 0.0,
+            }
+        return {
+            "object_proxy_count": len(components),
+            "object_proxy_area": comp["area"],
+            "object_proxy_bbox": comp["bbox"],
+            "object_proxy_centroid": comp["centroid"],
+            "object_proxy_extent_wh": comp["extent_wh"],
+            "object_proxy_aspect": aspect,
+            "object_proxy_top_edge": comp["bbox"][1] <= 2,
+            "object_proxy_components": components[:5],
+            **non_edge_fields,
+        }
+
+    @staticmethod
+    def _connected_components(mask: np.ndarray, *, min_area: int) -> list[dict[str, Any]]:
+        if mask.ndim != 2:
+            return []
+        height, width = mask.shape
+        visited = np.zeros(mask.shape, dtype=bool)
+        components: list[dict[str, Any]] = []
+        ys, xs = np.where(mask)
+        for y0, x0 in zip(ys.tolist(), xs.tolist()):
+            if visited[y0, x0] or not mask[y0, x0]:
+                continue
+            stack = [(y0, x0)]
+            visited[y0, x0] = True
+            pixels: list[tuple[int, int]] = []
+            while stack:
+                y, x = stack.pop()
+                pixels.append((y, x))
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    yy = y + dy
+                    xx = x + dx
+                    if 0 <= yy < height and 0 <= xx < width and mask[yy, xx] and not visited[yy, xx]:
+                        visited[yy, xx] = True
+                        stack.append((yy, xx))
+            if len(pixels) < min_area:
+                continue
+            py = np.asarray([p[0] for p in pixels], dtype=np.float64)
+            px = np.asarray([p[1] for p in pixels], dtype=np.float64)
+            min_x = int(px.min())
+            min_y = int(py.min())
+            max_x = int(px.max())
+            max_y = int(py.max())
+            components.append(
+                {
+                    "area": int(len(pixels)),
+                    "bbox": [min_x, min_y, max_x, max_y],
+                    "centroid": [float(px.mean()), float(py.mean())],
+                    "extent_wh": [max_x - min_x + 1, max_y - min_y + 1],
+                }
+            )
+        components.sort(key=lambda comp: int(comp["area"]), reverse=True)
+        return components
 
     def make_obs(self, raw_obs: Any, task: Task) -> Observation:
         return {
@@ -448,7 +827,7 @@ class RoboTwinBenchmark(StepBenchmark):
         return step_result.done
 
     def get_step_result(self, step_result: StepResult) -> EpisodeResult:
-        return {"success": step_result.info.get("success", False)}
+        return {"success": step_result.info.get("success", False), **self._oracle_suffix_result}
 
     def get_metadata(self) -> dict[str, Any]:
         return {

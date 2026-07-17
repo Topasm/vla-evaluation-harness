@@ -53,6 +53,28 @@ def test_cmd_serve_emits_argv_with_args_prefix(monkeypatch, tmp_path):
         yaml_path.unlink()
 
 
+def test_cmd_serve_uses_configured_python_interpreter(monkeypatch, tmp_path):
+    script = tmp_path / "server.py"
+    script.write_text("")
+    yaml_path = tmp_path / "server.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "script": str(script),
+                "python": "/custom/python",
+                "args": {"model_path": "x"},
+            }
+        )
+    )
+
+    ns = argparse.Namespace(config=str(yaml_path), address=None, arg=None)
+    cmd = _capture_cmd(monkeypatch, ns)
+
+    assert cmd[:2] == ["/custom/python", str(script)]
+    assert "uv" not in cmd[:2]
+    assert "--args.model_path=x" in cmd
+
+
 def test_cmd_serve_host_also_routed(monkeypatch, tmp_path):
     script = tmp_path / "server.py"
     script.write_text("")

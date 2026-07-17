@@ -1,0 +1,31 @@
+# RoboTwin 2.0 — SemTok P0 intervention feasibility probe
+#
+# Runs P0 until the object-proxy failure onset step, then invokes the
+# task-default oracle suffix. Use this to decide whether the closed-loop state
+# is still recoverable by a planner-level suffix or whether low-level grasp
+# competence must improve first.
+server:
+  url: "ws://localhost:8000"
+  timeout: 180
+
+docker:
+  image: ghcr.io/allenai/vla-evaluation-harness/robotwin:latest
+
+output_dir: "./results"
+
+benchmarks:
+  - benchmark: "vla_eval.benchmarks.robotwin.benchmark:RoboTwinBenchmark"
+    episodes_per_task: 1
+    max_steps: 140
+    params:
+      task_name: pick_diverse_bottles
+      task_config: demo_clean
+      seed: 0
+      instruction_type: seen
+      test_num: 1
+      skip_expert_check: true
+      fast_init: false
+      oracle_suffix_at_step: 128
+      oracle_suffix_mode: task_default
+      oracle_suffix_end_episode: true
+    action_dim: 14
