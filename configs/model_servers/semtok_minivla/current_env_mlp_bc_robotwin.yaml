@@ -1,0 +1,11 @@
+# SemTok CE3 current-env MLP BC model server — RoboTwin 2.0
+script: "src/vla_eval/model_servers/semtok_minivla.py"
+python: "/home/shkim_rllab/Desktop/semtok_vla/.venv/bin/python"
+args:
+  semtok_repo: "/home/shkim_rllab/Desktop/semtok_vla"
+  robotwin_root: "/home/shkim_rllab/Desktop/RoboTwin"
+  deploy_config: "/home/shkim_rllab/Desktop/semtok_vla/integrations/robotwin/policy/SemTokHarness/deploy_policy_current_env_mlp_bc.yml"
+  image_key: "cam_high"
+  chunk_size: 1
+  action_ensemble: "newest"
+  port: 8000
