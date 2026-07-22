@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+from pathlib import Path
 from typing import Any, cast
+import uuid
 
 import math
 
@@ -101,6 +105,12 @@ class LIBEROBenchmark(StepBenchmark):
         max_steps: int | None = None,
         env_seed: int | None = None,
         quat_no_antipodal: bool = False,
+        send_physics_state_hash: bool = False,
+        f8x_counterfactual_enabled: bool = False,
+        f8x_max_horizon: int = 6,
+        f8x_min_horizon: int = 6,
+        f8x_cadence: int = 1,
+        f8x_log_path: str = "",
     ) -> None:
         super().__init__()
         self.suite = suite
@@ -111,10 +121,282 @@ class LIBEROBenchmark(StepBenchmark):
         self.send_wrist_image = send_wrist_image
         self.send_state = send_state
         self.absolute_action = absolute_action
+        self.send_physics_state_hash = send_physics_state_hash
+        self.f8x_counterfactual_enabled = bool(f8x_counterfactual_enabled)
+        self.f8x_max_horizon = max(int(f8x_max_horizon), 1)
+        self.f8x_min_horizon = max(int(f8x_min_horizon), 1)
+        self.f8x_cadence = max(int(f8x_cadence), 1)
+        if self.f8x_min_horizon > self.f8x_max_horizon:
+            raise ValueError("f8x_min_horizon must be <= f8x_max_horizon")
+        default_f8x_path = Path("/workspace/results") / f"f8x_counterfactual_{uuid.uuid4().hex}.jsonl"
+        self.f8x_log_path = Path(f8x_log_path) if f8x_log_path else default_f8x_path
         self._max_steps = max_steps
         self._env = None
         self._task_suite = None
         self._current_task_id: int | None = None
+
+    @staticmethod
+    def _processed_action(raw_action: Any) -> list[float]:
+        if isinstance(raw_action, np.ndarray):
+            raw_action = raw_action.tolist()
+        if len(raw_action) != 7:
+            raise ValueError(f"Action dimension mismatch: got {len(raw_action)}, expected 7")
+        gripper = -1.0 if raw_action[-1] < 0 else 1.0
+        return [float(value) for value in raw_action[:-1]] + [gripper]
+
+    @staticmethod
+    def _copy_value(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            return value.copy()
+        if isinstance(value, (bool, int, float, str, type(None))):
+            return value
+        if isinstance(value, (list, tuple)):
+            copied_items = [LIBEROBenchmark._copy_value(item) for item in value]
+            if all(item is not None for item in copied_items):
+                return type(value)(copied_items)
+            return None
+        if isinstance(value, dict):
+            copied_dict = {}
+            for key, item in value.items():
+                if not isinstance(key, (bool, int, float, str)):
+                    return None
+                copied_item = LIBEROBenchmark._copy_value(item)
+                if copied_item is None:
+                    return None
+                copied_dict[key] = copied_item
+            return copied_dict
+        return None
+
+    @staticmethod
+    def _restore_value(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            return value.copy()
+        if isinstance(value, list):
+            return [LIBEROBenchmark._restore_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(LIBEROBenchmark._restore_value(item) for item in value)
+        if isinstance(value, dict):
+            return {key: LIBEROBenchmark._restore_value(item) for key, item in value.items()}
+        return value
+
+    def _capture_f8x_sim_data(self) -> dict[str, np.ndarray]:
+        assert self._env is not None
+        data = self._env.sim.data
+        state: dict[str, np.ndarray] = {}
+        for name in (
+            "ctrl",
+            "qacc_warmstart",
+            "qfrc_applied",
+            "xfrc_applied",
+            "mocap_pos",
+            "mocap_quat",
+            "userdata",
+        ):
+            value = getattr(data, name, None)
+            if isinstance(value, np.ndarray):
+                state[name] = value.copy()
+        return state
+
+    def _restore_f8x_sim_data(self, state: dict[str, np.ndarray]) -> None:
+        assert self._env is not None
+        data = self._env.sim.data
+        for name, value in state.items():
+            target = getattr(data, name, None)
+            if isinstance(target, np.ndarray) and target.shape == value.shape:
+                target[...] = value
+
+    def _capture_f8x_snapshot(self) -> dict[str, Any]:
+        assert self._env is not None
+        env = self._env.env
+        robot = env.robots[0]
+        controller = robot.controller
+        controller_state = {
+            name: copied
+            for name, value in controller.__dict__.items()
+            if (copied := self._copy_value(value)) is not None and name != "sim"
+        }
+        robot_state: dict[str, Any] = {}
+        for name in (
+            "recent_qpos",
+            "recent_actions",
+            "recent_torques",
+            "recent_ee_acc",
+            "recent_ee_forcetorques",
+            "recent_ee_pose",
+            "recent_ee_vel",
+            "recent_ee_vel_buffer",
+        ):
+            buffer = getattr(robot, name, None)
+            if buffer is not None:
+                robot_state[name] = {
+                    key: copied
+                    for key, value in buffer.__dict__.items()
+                    if (copied := self._copy_value(value)) is not None
+                }
+        robot_state["torques"] = np.asarray(robot.torques).copy()
+        gripper_state = {
+            name: copied
+            for name, value in robot.gripper.__dict__.items()
+            if (copied := self._copy_value(value)) is not None
+        }
+        observable_state = {
+            name: {
+                key: copied
+                for key, value in observable.__dict__.items()
+                if (copied := self._copy_value(value)) is not None
+            }
+            for name, observable in env._observables.items()
+        }
+        return {
+            "sim_state": self._env.sim.get_state().flatten().copy(),
+            "sim_data": self._capture_f8x_sim_data(),
+            "timestep": int(env.timestep),
+            "cur_time": float(env.cur_time),
+            "done": bool(env.done),
+            "controller": controller_state,
+            "robot": robot_state,
+            "gripper": gripper_state,
+            "observables": observable_state,
+        }
+
+    def _restore_f8x_snapshot(self, snapshot: dict[str, Any]) -> None:
+        assert self._env is not None
+        env = self._env.env
+        robot = env.robots[0]
+        self._env.set_state(snapshot["sim_state"])
+        self._env.sim.forward()
+        self._restore_f8x_sim_data(snapshot.get("sim_data", {}))
+        env.timestep = snapshot["timestep"]
+        env.cur_time = snapshot["cur_time"]
+        env.done = snapshot["done"]
+        for name, value in snapshot["controller"].items():
+            setattr(robot.controller, name, self._restore_value(value))
+        for name, state in snapshot["robot"].items():
+            if name == "torques":
+                robot.torques = state.copy()
+                continue
+            buffer = getattr(robot, name)
+            for key, value in state.items():
+                setattr(buffer, key, self._restore_value(value))
+        for name, value in snapshot.get("gripper", {}).items():
+            setattr(robot.gripper, name, self._restore_value(value))
+        for name, state in snapshot["observables"].items():
+            observable = env._observables[name]
+            for key, value in state.items():
+                setattr(observable, key, self._restore_value(value))
+
+    @staticmethod
+    def _state_hash(state: np.ndarray) -> str:
+        array = np.ascontiguousarray(np.asarray(state))
+        digest = hashlib.sha256()
+        digest.update(str(array.dtype).encode("ascii"))
+        digest.update(str(tuple(array.shape)).encode("ascii"))
+        digest.update(array.tobytes())
+        return digest.hexdigest()
+
+    def _goal_fraction(self) -> float:
+        assert self._env is not None
+        env = self._env.env
+        goals = list(env.parsed_problem.get("goal_state", []))
+        if not goals:
+            return float(bool(env._check_success()))
+        return float(np.mean([bool(env._eval_predicate(goal)) for goal in goals]))
+
+    def _run_f8x_plan(self, plan: list[list[float]]) -> dict[str, Any]:
+        assert self._env is not None
+        cumulative_reward = 0.0
+        success = False
+        success_step: int | None = None
+        first_state: np.ndarray | None = None
+        executed = 0
+        for index, action in enumerate(plan, start=1):
+            _obs, reward, done, _info = self._env.step(self._processed_action(action))
+            executed = index
+            cumulative_reward += float(reward)
+            state = self._env.sim.get_state().flatten().copy()
+            if first_state is None:
+                first_state = state
+            success = bool(done or self._env.check_success())
+            if success:
+                success_step = index
+                break
+        final_state = self._env.sim.get_state().flatten().copy()
+        goal_fraction = self._goal_fraction()
+        speed_bonus = 0.0 if success_step is None else 0.01 * (len(plan) - success_step) / max(len(plan), 1)
+        return {
+            "success": success,
+            "success_step": success_step,
+            "executed_steps": executed,
+            "cumulative_reward": cumulative_reward,
+            "goal_fraction": goal_fraction,
+            "task_score": goal_fraction + speed_bonus,
+            "first_state": first_state,
+            "final_state": final_state,
+            "final_state_hash": self._state_hash(final_state),
+        }
+
+    def _prepare_f8x_record(self, payload: dict[str, Any]) -> tuple[dict[str, Any], np.ndarray] | None:
+        action_step = int(payload.get("action_step", -1))
+        if action_step < 0 or action_step % self.f8x_cadence != 0:
+            return None
+        if int(payload.get("action_horizon", -1)) != 1 or int(payload.get("query_step", -2)) + 1 != action_step:
+            raise ValueError("F8X candidate/action horizon alignment failed")
+        base_plan = [list(row) for row in payload.get("base_plan", [])[: self.f8x_max_horizon]]
+        if len(base_plan) < self.f8x_min_horizon:
+            return None
+        snapshot = self._capture_f8x_snapshot()
+        outcomes: dict[str, dict[str, Any]] = {}
+
+        self._restore_f8x_snapshot(snapshot)
+        outcomes["base"] = self._run_f8x_plan(base_plan)
+        for name, first_action in payload.get("branches", {}).items():
+            self._restore_f8x_snapshot(snapshot)
+            outcomes[str(name)] = self._run_f8x_plan([list(first_action)] + base_plan[1:])
+        self._restore_f8x_snapshot(snapshot)
+        outcomes["base_repeat"] = self._run_f8x_plan(base_plan)
+        self._restore_f8x_snapshot(snapshot)
+
+        base_final = outcomes["base"]["final_state"]
+        repeat_final = outcomes["base_repeat"]["final_state"]
+        repeat_max_abs = float(np.max(np.abs(base_final - repeat_final)))
+        base_score = float(outcomes["base"]["task_score"])
+        labels: dict[str, dict[str, Any]] = {}
+        for name, outcome in outcomes.items():
+            if name in {"base", "base_repeat"}:
+                continue
+            delta = float(outcome["task_score"] - base_score)
+            labels[name] = {
+                "task_score_delta": delta,
+                "counterfactual_benefit": bool(delta > 1e-12),
+                "counterfactual_harm": bool(delta < -1e-12),
+            }
+        serializable_outcomes = {
+            name: {key: value for key, value in outcome.items() if key not in {"first_state", "final_state"}}
+            for name, outcome in outcomes.items()
+        }
+        record = {
+            "kind": "f8x_counterfactual_fork",
+            "suite": self.suite,
+            "task_id": self._current_task_id,
+            "task_description": self._task.get("name", ""),
+            "episode_id": str(payload.get("episode_id", "")),
+            "action_step": action_step,
+            "query_step": int(payload["query_step"]),
+            "horizon": len(base_plan),
+            "support": payload.get("support", {}),
+            "support_thresholds": payload.get("support_thresholds", {}),
+            "candidate_base_l2": float(payload.get("candidate_base_l2", float("nan"))),
+            "gripper_sign_flip": bool(payload.get("gripper_sign_flip", False)),
+            "outcomes": serializable_outcomes,
+            "labels": labels,
+            "restore_parity": {"base_repeat_final_max_abs": repeat_max_abs},
+        }
+        return record, np.asarray(outcomes["base"]["first_state"])
+
+    def _write_f8x_record(self, record: dict[str, Any]) -> None:
+        self.f8x_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.f8x_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
 
     def cleanup(self) -> None:
         if self._env is not None:
@@ -213,19 +495,24 @@ class LIBEROBenchmark(StepBenchmark):
 
     def step(self, action: Action) -> StepResult:
         raw_action = action.get("actions", action.get("action"))
-        if isinstance(raw_action, np.ndarray):
-            raw_action = raw_action.tolist()
-        assert len(raw_action) == 7, f"Action dimension mismatch: got {len(raw_action)}, expected 7"
-
-        # Discretize gripper
-        if raw_action[-1] < 0:
-            gripper = -1.0
-        else:
-            gripper = 1.0
-        processed_action = raw_action[:-1] + [gripper]
+        processed_action = self._processed_action(raw_action)
 
         assert self._env is not None
+        prepared = None
+        if self.f8x_counterfactual_enabled and "f8x_counterfactual" in action:
+            prepared = self._prepare_f8x_record(action["f8x_counterfactual"])
         obs, reward, done, info = self._env.step(processed_action)
+        if prepared is not None:
+            record, expected_first_state = prepared
+            actual_state = self._env.sim.get_state().flatten().copy()
+            record["restore_parity"]["actual_base_first_max_abs"] = float(
+                np.max(np.abs(actual_state - expected_first_state))
+            )
+            record["restore_parity"]["pass_atol_1e_10"] = bool(
+                record["restore_parity"]["base_repeat_final_max_abs"] <= 1e-10
+                and record["restore_parity"]["actual_base_first_max_abs"] <= 1e-10
+            )
+            self._write_f8x_record(record)
         self._recorder.record_video(self._extract_frame(obs))
         self._recorder.record_step(reward=float(reward), done=bool(done), success=bool(done))
         return StepResult(obs=obs, reward=reward, done=done, info=info)
@@ -270,6 +557,15 @@ class LIBEROBenchmark(StepBenchmark):
             obs_dict["controller_states"] = np.concatenate(
                 [ee_pos, ee_aa, np.asarray(raw_obs["robot0_gripper_qpos"], dtype=np.float32)]
             )
+
+        if self.send_physics_state_hash:
+            assert self._env is not None
+            state = np.ascontiguousarray(np.asarray(self._env.sim.get_state().flatten()))
+            digest = hashlib.sha256()
+            digest.update(str(state.dtype).encode("ascii"))
+            digest.update(str(tuple(state.shape)).encode("ascii"))
+            digest.update(state.tobytes())
+            obs_dict["physics_state_hash"] = digest.hexdigest()
 
         return obs_dict
 
